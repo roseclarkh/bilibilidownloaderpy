@@ -1,0 +1,5 @@
+/download
+/__pycache__
+/*.txt
+/*.json
+/tmp.bat
