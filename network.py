@@ -16,6 +16,8 @@ class Bili:
     img_key = ""
     sub_key = ""
 
+    is_downloading = False
+
     @staticmethod
     def get(url):
         headers = {"Referer": Bili.Referer, "User-Agent": Bili.UserAgent, "Cookie": Bili.Cookie}
@@ -96,6 +98,13 @@ class Bili:
                         downloaded_size += len(chunk)
                         progressbar['value'] += len(chunk)
                         progressbar.update_idletasks()
+
+                        # 强行终止
+                        if Bili.is_downloading == False:
+                            i = max_retries
+                            backup_id = len(backurl) - 1
+                            break
+
                 # 下载成功，退出循环
                 if downloaded_size < file_size or downloaded_size < 600:
                     print(f"第{i}次下载，{downloaded_size}/{file_size}")
