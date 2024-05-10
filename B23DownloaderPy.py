@@ -4,9 +4,7 @@ from tkinter import messagebox
 import re
 from network import Bili
 from urllib.parse import urlparse, parse_qs
-from PIL import Image, ImageTk
 from io import BytesIO
-from tkhtmlview import HTMLLabel
 import threading
 import datetime
 import os
@@ -69,11 +67,6 @@ def on_cleardone_clicked():
         Bili.is_downloading = True
         current_id = 0
         downloadAll(True)
-        download_arr = [item for item in download_arr if item.get("status") != "已完成"]
-        saveCache()
-        current_id = 0
-        tree.delete(*tree.get_children())
-        updateTable()
 
 def on_parse_clicked():
     global download_arr
@@ -88,7 +81,10 @@ def on_parse_clicked():
             videoes, page = parse_search(input_url)
             download_arr.extend(videoes)
         elif "space.bilibili.com/" in input_url:
-            parse_homepage(input_url)
+            if "/channel/collectiondetail" in input_url:
+                parse_collection(input_url)
+            else:
+                parse_homepage(input_url)
 
         download_arr = list({item["bvid"]: item for item in download_arr}.values())
         trace("去重剩余" + str(len(download_arr)) + "条数据\n")
@@ -168,15 +164,72 @@ def parse_search(url):
 
     return data, page
 
+def parse_archives(url):
+    reply = Bili.get(url)
+    json, errorString = Bili.parseReply(reply, "data")
+    #trace(reply);
+    data = json["data"]["archives"]
+    page = json["data"]["page"]
+    meta = json["data"]["meta"]
+    length = len(data)
+    trace(f"解析结果：{length}条\n")
+
+    return data, page, meta
+
+def parse_collection(url):
+    #https://space.bilibili.com/43707221/channel/collectiondetail?sid=1018407
+    url_parts = url.split('?')  # 将URL按照?进行切割，得到["https://space.bilibili.com/482500145", "spm_id_from=333.337.0.0"]
+    if len(url_parts) > 1:
+        match = re.search(r'\d+', url_parts[0])  # 在切割后的第一部分中匹配数字
+        if match:
+            mid = match.group()  # 提取匹配到的数字
+            match = re.search(r'\bsid=(\d+)', url_parts[1])
+            if match:
+                videos = []
+                sid = match.group(1)
+                print(mid, sid)
+                videos = []
+                parse_mid_collection(mid, sid, videos)
+                for bvdata in videos:
+                    if "author" in bvdata and "is_union_video" in bvdata and bvdata["is_union_video"] == 0:
+                        author_name = bvdata["author"]
+                download_arr.extend(videos)
+
+
 def parse_homepage(url):
     url_parts = url.split('?')  # 将URL按照?进行切割，得到["https://space.bilibili.com/482500145", "spm_id_from=333.337.0.0"]
     if len(url_parts) > 0:
         match = re.search(r'\d+', url_parts[0])  # 在切割后的第一部分中匹配数字
         if match:
             mid = match.group()  # 提取匹配到的数字
-            parse_mid(mid)
+            videos = []
+            parse_mid(mid, videos)
+            author_name = ""
+            if author_name != "":
+                for bvdata in videos:
+                    bvdata["author_name"] = author_name
+            download_arr.extend(videos)
 
-def parse_mid(mid, pn = 1, ps = 50):
+def parse_mid_collection(mid, sid, videos, pn = 1, ps = 50):
+    params = {
+        "mid": mid,
+        "season_id": sid,
+        "sort_reverse": "true",
+        "page_size": ps,
+        "page_num": pn
+    }
+    trace(f"解析第{pn}页...")
+    url = "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?" + Bili.getQueryURL(params)
+    datas, page, meta = parse_archives(url)
+    for bvdata in datas:
+        bvdata["author"] = meta["name"]
+        bvdata["pubdate"] = meta["ptime"]
+        bvdata["mid"] = meta["mid"]
+    videos.extend(datas)
+    if page["page_size"] * page["page_num"] <  page["total"]:
+        parse_mid_collection(mid, sid, videos, pn + 1, ps)
+
+def parse_mid(mid, videos, pn = 1, ps = 50):
     params = {
         "mid": mid,
         "ps": ps,
@@ -186,13 +239,13 @@ def parse_mid(mid, pn = 1, ps = 50):
     }
     trace(f"解析第{pn}页...")
     url = "https://api.bilibili.com/x/space/wbi/arc/search?" + Bili.getQueryURL(params)
-    videoes, page = parse_search(url)
-    download_arr.extend(videoes)
+    datas, page = parse_search(url)
+    videos.extend(datas)
     if page["pn"] * page["ps"] <  page["count"]:
-        parse_mid(mid, pn + 1, ps)
+        parse_mid(mid, videos, pn + 1, ps)
 
 def downloadAll(onlyCheck):
-    global current_id
+    global current_id, download_arr
 
     queuebar["value"] = current_id
     queuebar["maximum"] = len(download_arr)
@@ -203,6 +256,11 @@ def downloadAll(onlyCheck):
     if Bili.is_downloading == False:
         if onlyCheck == True:
             trace("检查已停止")
+            download_arr = [item for item in download_arr if item.get("status") != "已完成"]
+            saveCache()
+            current_id = 0
+            tree.delete(*tree.get_children())
+            updateTable()
         else:
             trace("下载已停止")
         return
@@ -211,6 +269,11 @@ def downloadAll(onlyCheck):
         on_stop_clicked()
         if onlyCheck == True:
             trace("检查已完成")
+            download_arr = [item for item in download_arr if item.get("status") != "已完成"]
+            saveCache()
+            current_id = 0
+            tree.delete(*tree.get_children())
+            updateTable()
         else:
             trace("下载已完成")
         return
@@ -221,19 +284,23 @@ def downloadAll(onlyCheck):
     if not "download_file" in bvdata:
         bvdata["status"] = "解析下载"
         parsePlayUrl(bvdata, False, onlyCheck)
-        downloadAll(onlyCheck)
+        root.after(1, downloadAll, onlyCheck)
     # 文件已下载
     elif os.path.exists(bvdata["download_file"]):
         trace("文件已存在：" + bvdata["download_file"] + "\n")
-        for staff_file in bvdata["staff_file"]:
-            if os.path.exists(staff_file):
-                trace("文件已存在：" + staff_file + "\n")
-            else:
-                shutil.copy(bvdata["download_file"], staff_file)
-                trace("文件已复制：" + staff_file + "\n")
+        #for staff_file in bvdata["staff_file"]:
+            #if os.path.exists(staff_file):
+                #trace("文件已存在：" + staff_file + "\n")
+            #else:
+                #shutil.copy(bvdata["download_file"], staff_file)
+                #trace("文件已复制：" + staff_file + "\n")
         bvdata["status"] = "已完成"
         current_id += 1
-        downloadAll(onlyCheck)
+        root.after(1, downloadAll, onlyCheck)
+    # 只检查状态
+    elif onlyCheck == True:
+        current_id = current_id + 1
+        root.after(1, downloadAll, onlyCheck)
     # 未解析cid
     elif not "cid" in bvdata:
         bvdata["status"] = "解析数据"
@@ -243,13 +310,9 @@ def downloadAll(onlyCheck):
             current_id = current_id + 1
             bvdata["status"] = "解析失败"
         else:
-            download_arr[current_id] = parseData
+            download_arr[current_id] = {**bvdata, **parseData}
 
         root.after(1, downloadAll, onlyCheck)
-    # 只检查状态
-    elif onlyCheck == True:
-        current_id = current_id + 1
-        root.after(1, downloadAll, onlyCheck)#downloadAll(onlyCheck)
     # 未解析地址
     elif not "video_url" in bvdata:
         bvdata["status"] = "解析视频"
@@ -289,7 +352,9 @@ def parsePlayUrl(bvdata, parse = False, onlyCheck = False):
     title = bvdata["title"]
     date = datetime.datetime.utcfromtimestamp(timestamp)
     formatted_date = date.strftime("%Y%m%d_%H%M%S")
-    if "author" in bvdata:
+    if "author_name" in bvdata:
+        owner = bvdata["author_name"]
+    elif "author" in bvdata:
         owner = bvdata["author"]
     else:
         owner = bvdata["owner"]["name"]
@@ -311,7 +376,7 @@ def parsePlayUrl(bvdata, parse = False, onlyCheck = False):
             if staff["name"] != owner:
                 staff_dir = os.path.join("download", replace_invalid_filename_chars(staff["name"]))
                 staff_file = os.path.join(staff_dir, file_name)
-                os.makedirs(staff_dir, exist_ok=True)
+                # os.makedirs(staff_dir, exist_ok=True)
                 bvdata["staff_file"].append(staff_file)
 
     #trace(bvdata["download_file"] + "," + str(parse))
@@ -421,9 +486,8 @@ def replace_invalid_filename_chars(filename):
     return re.sub(invalid_chars, '_', filename)
 
 def trace(txt):
-    if 'output_text' in locals() and output_text:
-        output_text.insert(tk.END, txt)
-        output_text.yview_moveto(1.0)
+    output_text.insert(tk.END, txt)
+    output_text.yview_moveto(1.0)
 
 def updateTable():
     row_count = len(tree.get_children())
@@ -438,10 +502,14 @@ def updateTable():
         title = bvdata["title"]
         date = datetime.datetime.utcfromtimestamp(timestamp)
         formatted_date = date.strftime("%Y-%m-%d %H:%M:%S")
-        if "author" in bvdata:
+        if "author_name" in bvdata:
+            owner = bvdata["author_name"]
+        elif "author" in bvdata:
             owner = bvdata["author"]
-        else:
+        elif "owner" in bvdata:
             owner = bvdata["owner"]["name"]
+        else:
+            owner = "未知"
         if "staff" in bvdata:
             for staff in bvdata["staff"]:
                 if staff["name"] != owner:
@@ -502,8 +570,6 @@ sys.setrecursionlimit(10000)  # 设置递归深度限制为3000或更高
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 os.chdir(script_dir)
-
-on_cleartemp_clicked()
 
 download_arr = []
 current_id = 0
@@ -622,6 +688,8 @@ retry_input.insert(0, "3")
 #input_text.insert(0, "https://www.bilibili.com/video/BV1Xy421B71G/?spm_id_from=333.999.0.0")
 #input_text.insert(0, "https://space.bilibili.com/482500145?spm_id_from=333.337.0.0")
 #input_text.insert(0, "https://api.bilibili.com/x/space/wbi/arc/search?mid=1353897724&ps=30&tid=0&pn=2&keyword=&order=pubdate&platform=web&web_location=1550101&order_avoided=true&dm_img_list=[%7B%22x%22:5434,%22y%22:54,%22z%22:0,%22timestamp%22:867080,%22k%22:73,%22type%22:0%7D,%7B%22x%22:5665,%22y%22:249,%22z%22:17,%22timestamp%22:867181,%22k%22:126,%22type%22:0%7D,%7B%22x%22:5748,%22y%22:663,%22z%22:4,%22timestamp%22:868126,%22k%22:112,%22type%22:0%7D,%7B%22x%22:5814,%22y%22:707,%22z%22:136,%22timestamp%22:868238,%22k%22:97,%22type%22:0%7D,%7B%22x%22:5954,%22y%22:788,%22z%22:269,%22timestamp%22:868348,%22k%22:105,%22type%22:0%7D,%7B%22x%22:5987,%22y%22:815,%22z%22:297,%22timestamp%22:868449,%22k%22:90,%22type%22:0%7D,%7B%22x%22:5644,%22y%22:572,%22z%22:206,%22timestamp%22:868549,%22k%22:113,%22type%22:0%7D,%7B%22x%22:4932,%22y%22:-115,%22z%22:132,%22timestamp%22:868649,%22k%22:119,%22type%22:0%7D,%7B%22x%22:5362,%22y%22:286,%22z%22:764,%22timestamp%22:868750,%22k%22:89,%22type%22:0%7D,%7B%22x%22:4734,%22y%22:-436,%22z%22:303,%22timestamp%22:868850,%22k%22:94,%22type%22:0%7D,%7B%22x%22:4469,%22y%22:-757,%22z%22:160,%22timestamp%22:868951,%22k%22:112,%22type%22:0%7D,%7B%22x%22:4195,%22y%22:-1078,%22z%22:27,%22timestamp%22:869052,%22k%22:82,%22type%22:0%7D,%7B%22x%22:5425,%22y%22:151,%22z%22:1329,%22timestamp%22:869156,%22k%22:99,%22type%22:0%7D,%7B%22x%22:4438,%22y%22:-837,%22z%22:345,%22timestamp%22:869866,%22k%22:80,%22type%22:0%7D,%7B%22x%22:4933,%22y%22:-319,%22z%22:840,%22timestamp%22:869966,%22k%22:121,%22type%22:0%7D,%7B%22x%22:4618,%22y%22:-543,%22z%22:505,%22timestamp%22:870067,%22k%22:71,%22type%22:0%7D,%7B%22x%22:5848,%22y%22:715,%22z%22:1720,%22timestamp%22:870168,%22k%22:123,%22type%22:0%7D,%7B%22x%22:5848,%22y%22:733,%22z%22:1712,%22timestamp%22:870281,%22k%22:83,%22type%22:0%7D,%7B%22x%22:4762,%22y%22:-346,%22z%22:628,%22timestamp%22:872943,%22k%22:80,%22type%22:0%7D,%7B%22x%22:5389,%22y%22:282,%22z%22:1252,%22timestamp%22:874868,%22k%22:73,%22type%22:0%7D,%7B%22x%22:5757,%22y%22:993,%22z%22:913,%22timestamp%22:874968,%22k%22:112,%22type%22:0%7D,%7B%22x%22:6613,%22y%22:2036,%22z%22:1093,%22timestamp%22:875072,%22k%22:115,%22type%22:0%7D,%7B%22x%22:6601,%22y%22:6373,%22z%22:2271,%22timestamp%22:875847,%22k%22:96,%22type%22:0%7D,%7B%22x%22:4747,%22y%22:4790,%22z%22:1329,%22timestamp%22:875947,%22k%22:66,%22type%22:0%7D,%7B%22x%22:3330,%22y%22:3358,%22z%22:1337,%22timestamp%22:876049,%22k%22:120,%22type%22:0%7D,%7B%22x%22:1515,%22y%22:1399,%22z%22:506,%22timestamp%22:876150,%22k%22:78,%22type%22:0%7D,%7B%22x%22:4849,%22y%22:5371,%22z%22:2869,%22timestamp%22:876251,%22k%22:101,%22type%22:0%7D,%7B%22x%22:3143,%22y%22:3820,%22z%22:1112,%22timestamp%22:876360,%22k%22:112,%22type%22:0%7D,%7B%22x%22:7560,%22y%22:5741,%22z%22:2736,%22timestamp%22:9752260,%22k%22:86,%22type%22:0%7D,%7B%22x%22:6710,%22y%22:4869,%22z%22:1906,%22timestamp%22:9752370,%22k%22:104,%22type%22:0%7D,%7B%22x%22:5813,%22y%22:3991,%22z%22:998,%22timestamp%22:9752470,%22k%22:90,%22type%22:0%7D,%7B%22x%22:7972,%22y%22:5791,%22z%22:3176,%22timestamp%22:9752570,%22k%22:81,%22type%22:0%7D,%7B%22x%22:7556,%22y%22:5069,%22z%22:2735,%22timestamp%22:9752671,%22k%22:74,%22type%22:0%7D,%7B%22x%22:7956,%22y%22:5229,%22z%22:3096,%22timestamp%22:9752772,%22k%22:69,%22type%22:0%7D,%7B%22x%22:5943,%22y%22:3174,%22z%22:1071,%22timestamp%22:9752887,%22k%22:94,%22type%22:0%7D,%7B%22x%22:5805,%22y%22:3038,%22z%22:927,%22timestamp%22:9753017,%22k%22:82,%22type%22:0%7D,%7B%22x%22:6076,%22y%22:3253,%22z%22:1136,%22timestamp%22:9753118,%22k%22:122,%22type%22:0%7D,%7B%22x%22:6081,%22y%22:2575,%22z%22:1028,%22timestamp%22:9753218,%22k%22:92,%22type%22:0%7D,%7B%22x%22:6747,%22y%22:1894,%22z%22:2147,%22timestamp%22:9753318,%22k%22:94,%22type%22:0%7D,%7B%22x%22:5625,%22y%22:396,%22z%22:1555,%22timestamp%22:9753419,%22k%22:96,%22type%22:0%7D,%7B%22x%22:6682,%22y%22:1311,%22z%22:2900,%22timestamp%22:9753519,%22k%22:83,%22type%22:0%7D,%7B%22x%22:7006,%22y%22:1529,%22z%22:3450,%22timestamp%22:9753619,%22k%22:117,%22type%22:0%7D,%7B%22x%22:3782,%22y%22:-1764,%22z%22:364,%22timestamp%22:9753720,%22k%22:123,%22type%22:0%7D,%7B%22x%22:3888,%22y%22:-1702,%22z%22:510,%22timestamp%22:9753820,%22k%22:98,%22type%22:0%7D,%7B%22x%22:5995,%22y%22:374,%22z%22:2618,%22timestamp%22:9753920,%22k%22:89,%22type%22:0%7D,%7B%22x%22:7620,%22y%22:1962,%22z%22:4170,%22timestamp%22:9754020,%22k%22:113,%22type%22:0%7D,%7B%22x%22:6218,%22y%22:595,%22z%22:2732,%22timestamp%22:9754120,%22k%22:85,%22type%22:0%7D,%7B%22x%22:8277,%22y%22:2681,%22z%22:4779,%22timestamp%22:9754220,%22k%22:70,%22type%22:0%7D,%7B%22x%22:4196,%22y%22:-1391,%22z%22:694,%22timestamp%22:9754325,%22k%22:120,%22type%22:0%7D,%7B%22x%22:6129,%22y%22:542,%22z%22:2627,%22timestamp%22:9754463,%22k%22:94,%22type%22:0%7D]&dm_img_str=V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ&dm_cover_img_str=QU5HTEUgKEFNRCwgQU1EIFJhZGVvbihUTSkgR3JhcGhpY3MgKDB4MDAwMDE2ODEpIERpcmVjdDNEMTEgdnNfNV8wIHBzXzVfMCwgRDNEMTEpR29vZ2xlIEluYy4gKEFNRC&dm_img_inter=%7B%22ds%22:[%7B%22t%22:10,%22c%22:%22YmUtcGFnZXItaXRlbQ%22,%22p%22:[2996,64,2952],%22s%22:[392,589,780]%7D],%22wh%22:[4761,4372,77],%22of%22:[2595,3728,402]%7D&w_rid=c1a5b71ddbfbc6ad2a131f1e3e15dead&wts=1713573777")
+
+on_cleartemp_clicked()
 
 Bili.Cookie = loadText("cookie.txt")
 

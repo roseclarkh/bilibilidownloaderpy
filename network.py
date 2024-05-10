@@ -21,8 +21,13 @@ class Bili:
     @staticmethod
     def get(url):
         headers = {"Referer": Bili.Referer, "User-Agent": Bili.UserAgent, "Cookie": Bili.Cookie}
-        response = requests.get(url, headers=headers, verify=False)
-        return response
+        try:
+            response = requests.get(url, headers=headers, verify=False)
+            return response
+        except Exception as e:
+            print(f"Failed to download file: {e}")
+
+        return ""
 
     @staticmethod
     def postUrlEncoded(url, data):
@@ -144,6 +149,9 @@ class Bili:
 
     @staticmethod
     def parseReply(reply, requiredKey):
+        if reply == "":
+            return {}, "网络请求错误"
+
         if reply.status_code != 200:
             print("network error:", reply.status_code, reply.reason, ", url=", reply.url)
             return {}, "网络请求错误"

@@ -1,1 +1,1 @@
-python B23DownloaderPy.py
+start pythonw B23DownloaderPy.py
