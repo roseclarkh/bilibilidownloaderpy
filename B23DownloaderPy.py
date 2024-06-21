@@ -15,6 +15,11 @@ import json
 import sys
 import webbrowser
 
+# 获取当前脚本文件的绝对路径
+current_file_path = os.path.abspath(__file__)
+current_dir = os.path.dirname(current_file_path)
+os.chdir(current_dir)
+
 def saveJson(path, data):
     with open(path, 'w') as file:
         json.dump(data, file)
